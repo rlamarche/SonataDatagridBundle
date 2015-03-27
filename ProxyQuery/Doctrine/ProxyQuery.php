@@ -14,9 +14,10 @@ namespace Sonata\DatagridBundle\ProxyQuery\Doctrine;
 use Doctrine\ORM\Query;
 use Doctrine\ORM\QueryBuilder;
 use Sonata\DatagridBundle\ProxyQuery\BaseProxyQuery;
+use Sonata\DatagridBundle\ProxyQuery\ProxyQueryInterface;
 
 /**
- * Class ProxyQuery.
+ * Class ProxyQuery
  *
  * This is the Doctrine proxy query class
  */
@@ -72,22 +73,7 @@ class ProxyQuery extends BaseProxyQuery
         $queryBuilderId->resetDQLPart('select');
         $queryBuilderId->add('select', 'DISTINCT '.$select);
 
-        // for SELECT DISTINCT, ORDER BY expressions must appear in select list
-        /* Consider
-            SELECT DISTINCT x FROM tab ORDER BY y;
-        For any particular x-value in the table there might be many different y
-        values.  Which one will you use to sort that x-value in the output?
-        */
-        // todo : check how doctrine behave, potential SQL injection here ...
-        if ($this->getSortBy()) {
-            $sortBy = $this->getSortBy();
-            if (strpos($sortBy, '.') === false) {
-                // add the current alias
-                $sortBy = $rootAlias.'.'.$sortBy;
-            }
-            $sortBy .= ' AS __order_by';
-            $queryBuilderId->addSelect($sortBy);
-        }
+        $queryBuilderId = $this->preserveSqlOrdering($queryBuilderId);
 
         $results    = $queryBuilderId->getQuery()->execute(array(), Query::HYDRATE_ARRAY);
         $idx        = array();
@@ -101,6 +87,49 @@ class ProxyQuery extends BaseProxyQuery
             $queryBuilder->andWhere(sprintf('%s IN (%s)', $select, implode(',', $idx)));
             $queryBuilder->setMaxResults(null);
             $queryBuilder->setFirstResult(null);
+        }
+
+        return $queryBuilder;
+    }
+
+    /**
+     * Generates new QueryBuilder for Postgresql or Oracle if necessary.
+     *
+     * @param $queryBuilder QueryBuilder
+     *
+     * @return QueryBuilder
+     */
+    public function preserveSqlOrdering(QueryBuilder $queryBuilder)
+    {
+        $rootAliases = $queryBuilder->getRootAliases();
+        $rootAlias = $rootAliases[0];
+
+        // for SELECT DISTINCT, ORDER BY expressions must appear in select list
+        // Consider SELECT DISTINCT x FROM tab ORDER BY y;
+        // For any particular x-value in the table there might be many different y
+        // values. Which one will you use to sort that x-value in the output?
+
+        // todo : check how doctrine behave, potential SQL injection here ...
+        if ($this->getSortBy()) {
+            $sortBy = $this->getSortBy();
+            if (strpos($sortBy, '.') === false) {
+                // add the current alias
+                $sortBy = $rootAlias.'.'.$sortBy;
+            }
+            $sortBy .= ' AS __order_by';
+            $queryBuilder->addSelect($sortBy);
+        }
+
+        // For any orderBy clause defined directly in the dqlParts
+        $dqlParts = $queryBuilder->getDqlParts();
+        if ($dqlParts['orderBy'] && count($dqlParts['orderBy'])) {
+            $sqlOrderColumns = array();
+            foreach ($dqlParts['orderBy'] as $part) {
+                foreach ($part->getParts() as $orderBy) {
+                    $sqlOrderColumns[] = preg_replace("/\s+(ASC|DESC)$/i", '', $orderBy);
+                }
+            }
+            $queryBuilder->addSelect(implode(', ', $sqlOrderColumns));
         }
 
         return $queryBuilder;
